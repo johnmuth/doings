@@ -1,6 +1,6 @@
 # Exhibition Saver Bookmarklet & Google Sheets Pipeline
 
-An efficient, frictionless pipeline to capture art exhibition metadata from web pages on desktop or mobile and store records instantly in a private Google Sheet.
+Capture art exhibition metadata from web pages and store records in a private Google Sheet.
 
 ---
 
