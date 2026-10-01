@@ -8,6 +8,10 @@ Capture art exhibition metadata from web pages and store records in a private Go
 
 ```text
 doings/
+├── .github/
+│   └── workflows/
+│       └── test.yml                 # CI workflow running automated tests and build on push/PR
+│
 ├── apps-script/
 │   ├── Code.js                  # Google Apps Script webhook handler (doPost, doGet, sheet appends)
 │   ├── appsscript.json          # Script manifest (V8 runtime & anonymous access settings)
@@ -115,6 +119,18 @@ Run the automated test suite covering date parsing algorithms, JSON-LD schema va
 ```bash
 npm test
 ```
+
+#### Continuous Integration (GitHub Actions)
+
+A GitHub Actions workflow is configured in [`.github/workflows/test.yml`](.github/workflows/test.yml) to automatically execute the test suite and verify bookmarklet builds across Node.js versions (18.x, 20.x, and 22.x) on every `push` and `pull_request` targeting `main` or `master`.
+
+#### Local Pre-Push Guard
+
+To verify all tests and builds locally before any code leaves your machine:
+```bash
+.git/hooks/pre-push
+```
+Whenever `git push` is executed, the pre-push hook runs `npm test` and `npm run build`, blocking the push if any errors or test regressions occur.
 
 #### Direct Terminal Test via `test-endpoint.sh`
 
