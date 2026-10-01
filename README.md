@@ -19,10 +19,19 @@ doings/
 │   └── dist/
 │       └── bookmarklet.min.js   # Compiled single-line `javascript:...` bookmarklet URL
 │
+├── test/                        # Automated test suites (node:test + jsdom)
+│   ├── apps-script-payload.test.js
+│   ├── bookmarklet-build.test.js
+│   ├── date-parser.test.js
+│   ├── jsonld-extraction.test.js
+│   ├── microdata-and-html.test.js
+│   └── real-world-fixtures.test.js
+│
 ├── scripts/
 │   ├── build-bookmarklet.sh     # Minification script to compile src/ into dist/
 │   └── test-endpoint.sh         # Parameterized curl verification script
 │
+├── package.json                 # Project configuration and test scripts
 ├── .gitignore                   # Ignores credentials, node modules, and system files
 └── README.md                    # Setup guide, schema definition, and runbook
 ```
@@ -98,6 +107,14 @@ Since browser bookmarks sync automatically via your cloud account (iCloud Safari
 ---
 
 ### Verification & Testing
+
+#### Automated Test Suite (Node.js Test Runner)
+
+Run the automated test suite covering date parsing algorithms, JSON-LD schema variations, microdata extraction, and real-world fixtures:
+
+```bash
+npm test
+```
 
 #### Direct Terminal Test via `test-endpoint.sh`
 

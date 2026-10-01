@@ -1,0 +1,22 @@
+{
+  "name": "doings",
+  "version": "1.0.0",
+  "description": "Exhibition Saver Bookmarklet & Google Sheets Pipeline",
+  "main": "bookmarklet/src/save-exhibition.js",
+  "scripts": {
+    "test": "node --test",
+    "build": "./scripts/build-bookmarklet.sh"
+  },
+  "keywords": [
+    "bookmarklet",
+    "exhibitions",
+    "scraper",
+    "google-sheets",
+    "metadata-extraction"
+  ],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "jsdom": "^29.1.1"
+  }
+}

@@ -1,13 +1,552 @@
 /**
  * Exhibition Saver Bookmarklet
- * Extracts exhibition metadata (JSON-LD, Open Graph, meta tags, selections)
+ * Extracts exhibition metadata (JSON-LD, Open Graph, Microdata, HTML5 elements, text heuristics)
  * and dispatches to Google Apps Script.
  */
-(async function saveExhibition() {
-  // Replace with your deployed Google Apps Script Web App URL ending in /exec
+(function() {
+const MONTH_MAP = {
+  january: 1, jan: 1,
+  february: 2, feb: 2,
+  march: 3, mar: 3,
+  april: 4, apr: 4,
+  may: 5,
+  june: 6, jun: 6,
+  july: 7, jul: 7,
+  august: 8, aug: 8,
+  september: 9, sep: 9, sept: 9,
+  october: 10, oct: 10,
+  november: 11, nov: 11,
+  december: 12, dec: 12
+};
+
+function pad(n) {
+  return String(n).padStart(2, '0');
+}
+
+function formatYMD(year, month, day) {
+  return `${year}-${pad(month)}-${pad(day)}`;
+}
+
+function parseMonth(monthStr) {
+  if (!monthStr) return null;
+  const clean = monthStr.toLowerCase().replace(/[^a-z]/g, '');
+  return MONTH_MAP[clean] || null;
+}
+
+function parseDay(dayStr) {
+  if (!dayStr) return null;
+  const num = parseInt(dayStr.replace(/[^0-9]/g, ''), 10);
+  return (num >= 1 && num <= 31) ? num : null;
+}
+
+function parseYear(yearStr) {
+  if (!yearStr) return null;
+  const num = parseInt(yearStr, 10);
+  return (num >= 1000 && num <= 9999) ? num : null;
+}
+
+/**
+ * Normalizes any single date string into YYYY-MM-DD format whenever possible.
+ */
+function normalizeDate(dateStr) {
+  if (!dateStr || typeof dateStr !== 'string') return '';
+  const str = dateStr.trim();
+  if (!str) return '';
+
+  // 1. ISO 8601: YYYY-MM-DD with optional time/timezone
+  const isoMatch = str.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (isoMatch) {
+    const y = parseYear(isoMatch[1]);
+    const m = parseInt(isoMatch[2], 10);
+    const d = parseDay(isoMatch[3]);
+    if (y && m >= 1 && m <= 12 && d) {
+      return formatYMD(y, m, d);
+    }
+  }
+
+  // 2. YYYY/MM/DD or YYYY.MM.DD
+  const ymdMatch = str.match(/^(\d{4})[./](\d{1,2})[./](\d{1,2})/);
+  if (ymdMatch) {
+    const y = parseYear(ymdMatch[1]);
+    const m = parseInt(ymdMatch[2], 10);
+    const d = parseDay(ymdMatch[3]);
+    if (y && m >= 1 && m <= 12 && d) {
+      return formatYMD(y, m, d);
+    }
+  }
+
+  // 3. Month Day, Year (e.g. "October 1, 2026", "Oct 1st 2026", "Sept. 23, 2026")
+  const mdyMatch = str.match(/^([A-Za-z]+)\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})/);
+  if (mdyMatch) {
+    const m = parseMonth(mdyMatch[1]);
+    const d = parseDay(mdyMatch[2]);
+    const y = parseYear(mdyMatch[3]);
+    if (m && d && y) {
+      return formatYMD(y, m, d);
+    }
+  }
+
+  // 4. Day Month Year (e.g. "1 October 2026", "15th Jan 2027", "30 Nov 2026")
+  const dmyMatch = str.match(/^(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]+)\.?,?\s+(\d{4})/);
+  if (dmyMatch) {
+    const d = parseDay(dmyMatch[1]);
+    const m = parseMonth(dmyMatch[2]);
+    const y = parseYear(dmyMatch[3]);
+    if (m && d && y) {
+      return formatYMD(y, m, d);
+    }
+  }
+
+  // 5. Month Year (e.g. "October 2026", "Jan 2027")
+  const myMatch = str.match(/^([A-Za-z]+)\.?,?\s+(\d{4})/);
+  if (myMatch) {
+    const m = parseMonth(myMatch[1]);
+    const y = parseYear(myMatch[2]);
+    if (m && y) {
+      return formatYMD(y, m, 1);
+    }
+  }
+
+  // 6. Numeric MM/DD/YYYY or DD.MM.YYYY
+  const numMatch = str.match(/^(\d{1,2})[./](\d{1,2})[./](\d{4})/);
+  if (numMatch) {
+    const n1 = parseInt(numMatch[1], 10);
+    const n2 = parseInt(numMatch[2], 10);
+    const y = parseYear(numMatch[3]);
+    if (y) {
+      if (n1 > 12 && n2 <= 12) {
+        return formatYMD(y, n2, n1);
+      } else if (n1 <= 12 && n2 <= 31) {
+        return formatYMD(y, n1, n2);
+      }
+    }
+  }
+
+  return str;
+}
+
+/**
+ * Extracts startDate and endDate from free-form text or date range strings.
+ */
+function parseDateRangeFromText(rawText) {
+  if (!rawText || typeof rawText !== 'string') return null;
+  const text = rawText
+    .replace(/^(?:on view|exhibition dates?|dates?|runs?|duration|when):\s*/i, '')
+    .trim();
+
+  // Pattern 0: ISO temporalCoverage slash format "YYYY-MM-DD/YYYY-MM-DD"
+  const isoSlashMatch = text.match(/(\d{4}-\d{2}-\d{2})\s*\/\s*(\d{4}-\d{2}-\d{2})/);
+  if (isoSlashMatch) {
+    return {
+      startDate: normalizeDate(isoSlashMatch[1]),
+      endDate: normalizeDate(isoSlashMatch[2])
+    };
+  }
+
+  // Pattern 1: Month Day, Year – Month Day, Year (cross-year, e.g. "October 1, 2026 – January 15, 2027")
+  const p1 = text.match(/([A-Za-z]+)\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})\s*(?:–|—|-|\/|to|until|thru|through)\s*([A-Za-z]+)\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})/i);
+  if (p1) {
+    const m1 = parseMonth(p1[1]), d1 = parseDay(p1[2]), y1 = parseYear(p1[3]);
+    const m2 = parseMonth(p1[4]), d2 = parseDay(p1[5]), y2 = parseYear(p1[6]);
+    if (m1 && d1 && y1 && m2 && d2 && y2) {
+      return { startDate: formatYMD(y1, m1, d1), endDate: formatYMD(y2, m2, d2) };
+    }
+  }
+
+  // Pattern 2: Day Month Year – Day Month Year (e.g. "1 October 2026 – 15 January 2027")
+  const p2 = text.match(/(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]+)\.?\s+(\d{4})\s*(?:–|—|-|\/|to|until|thru|through)\s*(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]+)\.?\s+(\d{4})/i);
+  if (p2) {
+    const d1 = parseDay(p2[1]), m1 = parseMonth(p2[2]), y1 = parseYear(p2[3]);
+    const d2 = parseDay(p2[4]), m2 = parseMonth(p2[5]), y2 = parseYear(p2[6]);
+    if (m1 && d1 && y1 && m2 && d2 && y2) {
+      return { startDate: formatYMD(y1, m1, d1), endDate: formatYMD(y2, m2, d2) };
+    }
+  }
+
+  // Pattern 3: Month Day – Month Day, Year (e.g. "October 1 – November 30, 2026")
+  const p3 = text.match(/([A-Za-z]+)\.?\s+(\d{1,2})(?:st|nd|rd|th)?\s*(?:–|—|-|\/|to|until|thru|through)\s*([A-Za-z]+)\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})/i);
+  if (p3) {
+    const m1 = parseMonth(p3[1]), d1 = parseDay(p3[2]);
+    const m2 = parseMonth(p3[3]), d2 = parseDay(p3[4]), y = parseYear(p3[5]);
+    if (m1 && d1 && m2 && d2 && y) {
+      return { startDate: formatYMD(y, m1, d1), endDate: formatYMD(y, m2, d2) };
+    }
+  }
+
+  // Pattern 4: Day Month – Day Month Year (e.g. "1 October – 30 November 2026")
+  const p4 = text.match(/(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]+)\.?\s*(?:–|—|-|\/|to|until|thru|through)\s*(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]+)\.?,?\s+(\d{4})/i);
+  if (p4) {
+    const d1 = parseDay(p4[1]), m1 = parseMonth(p4[2]);
+    const d2 = parseDay(p4[3]), m2 = parseMonth(p4[4]), y = parseYear(p4[5]);
+    if (m1 && d1 && m2 && d2 && y) {
+      return { startDate: formatYMD(y, m1, d1), endDate: formatYMD(y, m2, d2) };
+    }
+  }
+
+  // Pattern 5: Month Day – Day, Year (e.g. "October 1 – 15, 2026")
+  const p5 = text.match(/([A-Za-z]+)\.?\s+(\d{1,2})(?:st|nd|rd|th)?\s*(?:–|—|-|\/|to|until|thru|through)\s*(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})/i);
+  if (p5) {
+    const m = parseMonth(p5[1]), d1 = parseDay(p5[2]), d2 = parseDay(p5[3]), y = parseYear(p5[4]);
+    if (m && d1 && d2 && y) {
+      return { startDate: formatYMD(y, m, d1), endDate: formatYMD(y, m, d2) };
+    }
+  }
+
+  // Pattern 6: Day – Day Month Year (e.g. "1 – 15 October 2026")
+  const p6 = text.match(/(\d{1,2})(?:st|nd|rd|th)?\s*(?:–|—|-|\/|to|until|thru|through)\s*(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]+)\.?,?\s+(\d{4})/i);
+  if (p6) {
+    const d1 = parseDay(p6[1]), d2 = parseDay(p6[2]), m = parseMonth(p6[3]), y = parseYear(p6[4]);
+    if (m && d1 && d2 && y) {
+      return { startDate: formatYMD(y, m, d1), endDate: formatYMD(y, m, d2) };
+    }
+  }
+
+  // Pattern 7: Numeric ISO range "2026-10-01 to 2027-01-15"
+  const p7 = text.match(/(\d{4}[-/.](?:1[0-2]|0?[1-9])[-/.](?:3[01]|[12]\d|0?[1-9]))\s*(?:–|—|-|to|until|thru|through)\s*(\d{4}[-/.](?:1[0-2]|0?[1-9])[-/.](?:3[01]|[12]\d|0?[1-9]))/i);
+  if (p7) {
+    return { startDate: normalizeDate(p7[1]), endDate: normalizeDate(p7[2]) };
+  }
+
+  // Pattern 8: Month Year – Month Year (e.g. "October 2026 – January 2027")
+  const p8 = text.match(/([A-Za-z]+)\.?\s+(\d{4})\s*(?:–|—|-|\/|to|until|thru|through)\s*([A-Za-z]+)\.?\s+(\d{4})/i);
+  if (p8) {
+    const m1 = parseMonth(p8[1]), y1 = parseYear(p8[2]);
+    const m2 = parseMonth(p8[3]), y2 = parseYear(p8[4]);
+    if (m1 && y1 && m2 && y2) {
+      return { startDate: formatYMD(y1, m1, 1), endDate: formatYMD(y2, m2, 1) };
+    }
+  }
+
+  // Pattern 9: Month – Month Year (e.g. "October – November 2026")
+  const p9 = text.match(/([A-Za-z]+)\.?\s*(?:–|—|-|\/|to|until|thru|through)\s*([A-Za-z]+)\.?,?\s+(\d{4})/i);
+  if (p9) {
+    const m1 = parseMonth(p9[1]), m2 = parseMonth(p9[2]), y = parseYear(p9[3]);
+    if (m1 && m2 && y) {
+      return { startDate: formatYMD(y, m1, 1), endDate: formatYMD(y, m2, 1) };
+    }
+  }
+
+  // Pattern 10: Single prefix "Through [Date]" / "Until [Date]" / "Closes [Date]"
+  const pEnd = text.match(/(?:through|thru|until|till|closes?|closing|ends?|ending)\s+(?:on\s+)?([A-Za-z]+\.?\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}|\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]+\.?,?\s+\d{4}|\d{4}-\d{2}-\d{2})/i);
+  if (pEnd) {
+    return { startDate: '', endDate: normalizeDate(pEnd[1]) };
+  }
+
+  // Pattern 11: Single prefix "Opening [Date]" / "Opens [Date]" / "From [Date]"
+  const pStart = text.match(/(?:opens?|opening|starts?|starting|from)\s+(?:on\s+)?([A-Za-z]+\.?\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}|\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]+\.?,?\s+\d{4}|\d{4}-\d{2}-\d{2})/i);
+  if (pStart) {
+    return { startDate: normalizeDate(pStart[1]), endDate: '' };
+  }
+
+  return null;
+}
+
+/**
+ * Extracts structured JSON-LD schema metadata from document.
+ */
+function extractJsonLd(doc) {
+  if (!doc) return null;
+  const scripts = doc.querySelectorAll('script[type="application/ld+json"]');
+  const items = [];
+
+  function collect(obj) {
+    if (!obj || typeof obj !== 'object') return;
+    if (Array.isArray(obj)) {
+      obj.forEach(collect);
+      return;
+    }
+    items.push(obj);
+    if (obj['@graph']) collect(obj['@graph']);
+    if (obj.events) collect(obj.events);
+    if (obj.event) collect(obj.event);
+    if (obj.subEvent) collect(obj.subEvent);
+    if (obj.subEvents) collect(obj.subEvents);
+    if (obj.itemListElement) collect(obj.itemListElement);
+    if (obj.item) collect(obj.item);
+  }
+
+  for (const script of scripts) {
+    try {
+      const content = script.textContent ? script.textContent.trim() : '';
+      if (!content) continue;
+      const parsed = JSON.parse(content);
+      collect(parsed);
+    } catch (e) {
+      // Ignore unparseable JSON-LD blocks
+    }
+  }
+
+  function scoreItem(item) {
+    let score = 0;
+    const type = item['@type'];
+    const types = Array.isArray(type) ? type : [type];
+    const isEventOrArt = types.some(t => typeof t === 'string' && /Event|Exhibition|VisualArtwork|CreativeWork|Show/i.test(t));
+    if (isEventOrArt) score += 50;
+    if (item.startDate && item.endDate) score += 60;
+    else if (item.startDate || item.endDate) score += 30;
+    if (item.temporalCoverage) score += 40;
+    if (item.name) score += 10;
+    if (item.location) score += 10;
+    return score;
+  }
+
+  let bestItem = null;
+  let bestScore = 0;
+
+  for (const item of items) {
+    const score = scoreItem(item);
+    if (score > bestScore) {
+      bestScore = score;
+      bestItem = item;
+    }
+  }
+
+  return bestItem;
+}
+
+/**
+ * Extracts microdata attributes and semantic HTML meta tags from document.
+ */
+function extractMicrodataAndMeta(doc) {
+  if (!doc) return { startDate: '', endDate: '' };
+
+  const getAttr = (el, attrs) => {
+    if (!el) return null;
+    for (const attr of attrs) {
+      const val = el.getAttribute(attr);
+      if (val && val.trim()) return val.trim();
+    }
+    return el.textContent ? el.textContent.trim() : null;
+  };
+
+  const startEl = doc.querySelector([
+    '[itemprop="startDate"]',
+    '[property="startDate"]',
+    '[property="schema:startDate"]',
+    '[property="event:start_time"]',
+    '[property="og:start_date"]',
+    '[name="startDate"]',
+    '.dtstart',
+    '.start-date',
+    '.date-start',
+    '.date_start',
+    '[data-start-date]'
+  ].join(', '));
+
+  const endEl = doc.querySelector([
+    '[itemprop="endDate"]',
+    '[property="endDate"]',
+    '[property="schema:endDate"]',
+    '[property="event:end_time"]',
+    '[property="og:end_date"]',
+    '[name="endDate"]',
+    '.dtend',
+    '.end-date',
+    '.date-end',
+    '.date_end',
+    '[data-end-date]'
+  ].join(', '));
+
+  const startRaw = getAttr(startEl, ['content', 'datetime', 'data-start-date']);
+  const endRaw = getAttr(endEl, ['content', 'datetime', 'data-end-date']);
+
+  let startDate = startRaw ? normalizeDate(startRaw) : '';
+  let endDate = endRaw ? normalizeDate(endRaw) : '';
+
+  if (!startDate && !endDate) {
+    const tempEl = doc.querySelector('[itemprop="temporalCoverage"], [property="temporalCoverage"], meta[name="temporalCoverage"]');
+    const tempVal = getAttr(tempEl, ['content']);
+    if (tempVal) {
+      const range = parseDateRangeFromText(tempVal);
+      if (range) {
+        startDate = range.startDate;
+        endDate = range.endDate;
+      }
+    }
+  }
+
+  return { startDate, endDate };
+}
+
+/**
+ * Extracts dates from DOM elements, classes, and surrounding text.
+ */
+function extractDatesFromDomText(doc, selectionText) {
+  if (!doc) return { startDate: '', endDate: '' };
+
+  // 1. If user highlighted text containing dates
+  if (selectionText && selectionText.trim()) {
+    const range = parseDateRangeFromText(selectionText);
+    if (range && (range.startDate || range.endDate)) {
+      return range;
+    }
+  }
+
+  // 2. Check dedicated date containers and semantic classes
+  const selectors = [
+    '.exhibition-dates',
+    '.event-dates',
+    '.dates',
+    '.date-range',
+    '.date',
+    '[class*="date" i]',
+    '[class*="event" i]',
+    '[class*="duration" i]',
+    '[class*="schedule" i]',
+    'time',
+    'header',
+    '.subtitle',
+    'h1 + p',
+    'h2',
+    'p'
+  ];
+
+  for (const sel of selectors) {
+    try {
+      const elements = doc.querySelectorAll(sel);
+      for (const el of elements) {
+        const text = el.textContent ? el.textContent.trim() : '';
+        if (text && text.length < 300) {
+          const range = parseDateRangeFromText(text);
+          if (range && (range.startDate || range.endDate)) {
+            return range;
+          }
+        }
+      }
+    } catch (e) {
+      // Ignore query errors
+    }
+  }
+
+  // 3. Check meta description
+  const metaDesc = doc.querySelector('meta[property="og:description"], meta[name="description"]');
+  if (metaDesc) {
+    const content = metaDesc.getAttribute('content');
+    if (content) {
+      const range = parseDateRangeFromText(content);
+      if (range && (range.startDate || range.endDate)) {
+        return range;
+      }
+    }
+  }
+
+  return { startDate: '', endDate: '' };
+}
+
+/**
+ * Main metadata extraction function.
+ */
+function extractExhibitionMetadata(doc, win) {
+  const currentDoc = doc || (typeof document !== 'undefined' ? document : null);
+  const currentWin = win || (typeof window !== 'undefined' ? window : null);
+
+  if (!currentDoc) {
+    throw new Error('Document is required for extracting metadata');
+  }
+
+  const getMeta = (prop) => {
+    const el = currentDoc.querySelector(`meta[property="${prop}"], meta[name="${prop}"]`);
+    return el ? el.getAttribute('content') : null;
+  };
+
+  // 1. Extract JSON-LD metadata
+  const schemaData = extractJsonLd(currentDoc);
+
+  // 2. Extract Open Graph and standard meta fallbacks
+  const title = schemaData?.name ||
+                getMeta('og:title') ||
+                getMeta('twitter:title') ||
+                (currentDoc.title ? currentDoc.title.trim() : '');
+
+  let image = '';
+  if (schemaData?.image) {
+    if (typeof schemaData.image === 'string') {
+      image = schemaData.image;
+    } else if (schemaData.image.url) {
+      image = schemaData.image.url;
+    } else if (Array.isArray(schemaData.image) && schemaData.image.length > 0) {
+      image = typeof schemaData.image[0] === 'string' ? schemaData.image[0] : (schemaData.image[0]?.url || '');
+    }
+  }
+  if (!image) {
+    image = getMeta('og:image') || getMeta('twitter:image') || '';
+  }
+
+  const description = schemaData?.description ||
+                      getMeta('og:description') ||
+                      getMeta('description') ||
+                      '';
+
+  let venue = '';
+  if (schemaData?.location?.name) {
+    venue = schemaData.location.name;
+  } else if (schemaData?.organizer?.name) {
+    venue = schemaData.organizer.name;
+  } else if (schemaData?.provider?.name) {
+    venue = schemaData.provider.name;
+  } else {
+    venue = getMeta('og:site_name') ||
+            getMeta('site_name') ||
+            getMeta('publisher') ||
+            (currentWin?.location?.hostname ? currentWin.location.hostname.replace(/^www\./, '') : '');
+  }
+
+  // 3. User Highlighted Text / Selection
+  let selectedText = '';
+  if (currentWin?.getSelection) {
+    try {
+      selectedText = currentWin.getSelection().toString().trim();
+    } catch (e) {}
+  }
+
+  // 4. Date extraction cascade
+  let startDate = schemaData?.startDate ? normalizeDate(schemaData.startDate) : '';
+  let endDate = schemaData?.endDate ? normalizeDate(schemaData.endDate) : '';
+
+  if ((!startDate || !endDate) && schemaData?.temporalCoverage) {
+    const range = parseDateRangeFromText(schemaData.temporalCoverage);
+    if (range) {
+      if (!startDate && range.startDate) startDate = range.startDate;
+      if (!endDate && range.endDate) endDate = range.endDate;
+    }
+  }
+
+  if (!startDate || !endDate) {
+    const micro = extractMicrodataAndMeta(currentDoc);
+    if (!startDate && micro.startDate) startDate = micro.startDate;
+    if (!endDate && micro.endDate) endDate = micro.endDate;
+  }
+
+  if (!startDate || !endDate) {
+    const domDates = extractDatesFromDomText(currentDoc, selectedText);
+    if (!startDate && domDates.startDate) startDate = domDates.startDate;
+    if (!endDate && domDates.endDate) endDate = domDates.endDate;
+  }
+
+  const url = schemaData?.url || getMeta('og:url') || (currentWin?.location?.href || '');
+
+  return {
+    title,
+    venue,
+    startDate,
+    endDate,
+    url,
+    image,
+    notes: selectedText || description,
+    selectedNotes: selectedText,
+    description,
+    savedAt: new Date().toISOString()
+  };
+}
+
+/**
+ * Bookmarklet entry point.
+ */
+async function saveExhibition() {
   const WEBHOOK_URL = 'YOUR_GOOGLE_APPS_SCRIPT_URL_HERE';
 
   function showToast(message, isError = false) {
+    if (typeof document === 'undefined') return;
     const toast = document.createElement('div');
     toast.textContent = message;
     Object.assign(toast.style, {
@@ -34,73 +573,10 @@
   }
 
   try {
-    // 1. Extract JSON-LD metadata
-    let schemaData = null;
-    const scripts = document.querySelectorAll('script[type="application/ld+json"]');
-    for (const script of scripts) {
-      try {
-        const parsed = JSON.parse(script.textContent);
-        const items = Array.isArray(parsed) ? parsed : [parsed];
-        const match = items.find(item => 
-          item && ['Event', 'ExhibitionEvent', 'VisualArtwork'].includes(item['@type'])
-        );
-        if (match) {
-          schemaData = match;
-          break;
-        }
-      } catch (e) {
-        // Ignore unparseable JSON-LD blocks
-      }
-    }
-
-    // 2. Extract Open Graph and standard meta fallbacks
-    const getMeta = (prop) => {
-      const el = document.querySelector(`meta[property="${prop}"], meta[name="${prop}"]`);
-      return el ? el.getAttribute('content') : null;
-    };
-
-    const title = schemaData?.name ||
-                  getMeta('og:title') ||
-                  getMeta('twitter:title') ||
-                  document.title.trim();
-
-    const image = schemaData?.image?.url ||
-                  (typeof schemaData?.image === 'string' ? schemaData.image : null) ||
-                  getMeta('og:image') ||
-                  getMeta('twitter:image') ||
-                  '';
-
-    const description = schemaData?.description ||
-                        getMeta('og:description') ||
-                        getMeta('description') ||
-                        '';
-
-    const venue = schemaData?.location?.name ||
-                  getMeta('og:site_name') ||
-                  window.location.hostname.replace(/^www\./, '');
-
-    const startDate = schemaData?.startDate || '';
-    const endDate = schemaData?.endDate || '';
-
-    // 3. User Highlighted Text / Selection
-    const selectedText = window.getSelection().toString().trim();
-
-    const payload = {
-      title,
-      venue,
-      startDate,
-      endDate,
-      url: window.location.href,
-      image,
-      notes: selectedText || description,
-      selectedNotes: selectedText,
-      description,
-      savedAt: new Date().toISOString()
-    };
+    const payload = extractExhibitionMetadata(document, window);
 
     showToast('Saving exhibition...');
 
-    // Use mode: 'no-cors' with text/plain to avoid CORS preflight blocking in browsers
     await fetch(WEBHOOK_URL, {
       method: 'POST',
       mode: 'no-cors',
@@ -115,4 +591,20 @@
     console.error('Bookmarklet error:', err);
     showToast(`Failed to save exhibition: ${err.message}`, true);
   }
+}
+
+// Module export for testing / Node.js or execution in browser bookmarklet
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    saveExhibition,
+    extractExhibitionMetadata,
+    extractJsonLd,
+    extractMicrodataAndMeta,
+    extractDatesFromDomText,
+    parseDateRangeFromText,
+    normalizeDate
+  };
+} else if (typeof window !== 'undefined') {
+  saveExhibition();
+}
 })();
