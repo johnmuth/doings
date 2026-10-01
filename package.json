@@ -7,6 +7,9 @@
     "test": "node --test",
     "build": "./scripts/build-bookmarklet.sh"
   },
+  "engines": {
+    "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
+  },
   "keywords": [
     "bookmarklet",
     "exhibitions",

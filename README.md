@@ -122,7 +122,7 @@ npm test
 
 #### Continuous Integration (GitHub Actions)
 
-A GitHub Actions workflow is configured in [`.github/workflows/test.yml`](.github/workflows/test.yml) to automatically execute the test suite and verify bookmarklet builds across Node.js versions (20.x, 22.x, and 24.x) on every `push` and `pull_request` targeting `main` or `master`.
+A GitHub Actions workflow is configured in [`.github/workflows/test.yml`](.github/workflows/test.yml) to automatically execute the test suite and verify bookmarklet builds across Node.js versions (22.x and 24.x) on every `push` and `pull_request` targeting `main` or `master`.
 
 #### Local Pre-Push Guard
 
