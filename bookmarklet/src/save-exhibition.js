@@ -131,7 +131,8 @@ function normalizeDate(dateStr) {
 function parseDateRangeFromText(rawText) {
   if (!rawText || typeof rawText !== 'string') return null;
   const text = rawText
-    .replace(/^(?:on view|exhibition dates?|dates?|runs?|duration|when):\s*/i, '')
+    .replace(/^(?:on view|exhibition dates?|dates?|runs?|duration|when)[:\s-]*\s*/i, '')
+    .replace(/\s+/g, ' ')
     .trim();
 
   // Pattern 0: ISO temporalCoverage slash format "YYYY-MM-DD/YYYY-MM-DD"
@@ -319,7 +320,18 @@ function extractMicrodataAndMeta(doc) {
     return el.textContent ? el.textContent.trim() : null;
   };
 
-  const startEl = doc.querySelector([
+  const findEl = (selectors) => {
+    const list = doc.querySelectorAll(selectors.join(', '));
+    for (const el of list) {
+      if (typeof el.closest === 'function' && el.closest('header, nav, footer, aside, .site-search, .search-bar, [role="navigation"], [role="search"], [role="banner"], [role="contentinfo"]')) {
+        continue;
+      }
+      return el;
+    }
+    return list[0] || null;
+  };
+
+  const startEl = findEl([
     '[itemprop="startDate"]',
     '[property="startDate"]',
     '[property="schema:startDate"]',
@@ -331,9 +343,9 @@ function extractMicrodataAndMeta(doc) {
     '.date-start',
     '.date_start',
     '[data-start-date]'
-  ].join(', '));
+  ]);
 
-  const endEl = doc.querySelector([
+  const endEl = findEl([
     '[itemprop="endDate"]',
     '[property="endDate"]',
     '[property="schema:endDate"]',
@@ -345,7 +357,7 @@ function extractMicrodataAndMeta(doc) {
     '.date-end',
     '.date_end',
     '[data-end-date]'
-  ].join(', '));
+  ]);
 
   const startRaw = getAttr(startEl, ['content', 'datetime', 'data-start-date']);
   const endRaw = getAttr(endEl, ['content', 'datetime', 'data-end-date']);
@@ -354,7 +366,7 @@ function extractMicrodataAndMeta(doc) {
   let endDate = endRaw ? normalizeDate(endRaw) : '';
 
   if (!startDate && !endDate) {
-    const tempEl = doc.querySelector('[itemprop="temporalCoverage"], [property="temporalCoverage"], meta[name="temporalCoverage"]');
+    const tempEl = findEl(['[itemprop="temporalCoverage"]', '[property="temporalCoverage"]', 'meta[name="temporalCoverage"]']);
     const tempVal = getAttr(tempEl, ['content']);
     if (tempVal) {
       const range = parseDateRangeFromText(tempVal);
@@ -377,40 +389,112 @@ function extractDatesFromDomText(doc, selectionText) {
   // 1. If user highlighted text containing dates
   if (selectionText && selectionText.trim()) {
     const range = parseDateRangeFromText(selectionText);
-    if (range && (range.startDate || range.endDate)) {
+    if (range && range.startDate && range.endDate) {
       return range;
     }
   }
 
-  // 2. Check dedicated date containers and semantic classes
+  // 2. Candidate tracking and scoring
+  let bestComplete = null;
+  let bestCompleteScore = -Infinity;
+  let bestStart = null;
+  let bestStartScore = -Infinity;
+  let bestEnd = null;
+  let bestEndScore = -Infinity;
+
+  if (selectionText && selectionText.trim()) {
+    const range = parseDateRangeFromText(selectionText);
+    if (range) {
+      if (range.startDate) {
+        bestStart = range.startDate;
+        bestStartScore = 500;
+      }
+      if (range.endDate) {
+        bestEnd = range.endDate;
+        bestEndScore = 500;
+      }
+    }
+  }
+
   const selectors = [
+    '[class*="content-block--dates" i]',
     '.exhibition-dates',
     '.event-dates',
-    '.dates',
     '.date-range',
+    '.dates',
     '.date',
     '[class*="date" i]',
-    '[class*="event" i]',
-    '[class*="duration" i]',
+    '[class*="dates" i]',
     '[class*="schedule" i]',
+    '[class*="duration" i]',
     'time',
-    'header',
     '.subtitle',
     'h1 + p',
+    'h2 + p',
     'h2',
+    'h3',
     'p'
   ];
+
+  const seen = new Set();
 
   for (const sel of selectors) {
     try {
       const elements = doc.querySelectorAll(sel);
       for (const el of elements) {
-        const text = el.textContent ? el.textContent.trim() : '';
-        if (text && text.length < 300) {
-          const range = parseDateRangeFromText(text);
-          if (range && (range.startDate || range.endDate)) {
-            return range;
+        if (seen.has(el)) continue;
+        seen.add(el);
+
+        const text = el.textContent ? el.textContent.replace(/\s+/g, ' ').trim() : '';
+        if (!text || text.length > 300) continue;
+
+        const range = parseDateRangeFromText(text);
+        if (!range || (!range.startDate && !range.endDate)) continue;
+
+        let score = 0;
+        const hasBoth = !!(range.startDate && range.endDate);
+        if (hasBoth) {
+          score += 100;
+        } else {
+          score += 20;
+        }
+
+        const isInsideMain = typeof el.closest === 'function' && !!el.closest('main, article, [role="main"], #main, #content, .content, .main, .main-content, .exhibition-view, .sqs-block-content');
+        if (isInsideMain) {
+          score += 40;
+        }
+
+        const isInsideNoise = typeof el.closest === 'function' && !!el.closest('header, nav, footer, aside, .site-search, .search-bar, [role="navigation"], [role="search"], [role="banner"], [role="contentinfo"]');
+        if (isInsideNoise) {
+          score -= 50;
+        }
+
+        const className = (typeof el.className === 'string') ? el.className.toLowerCase() : '';
+        if (/date|dates|schedule|duration|exhibition/i.test(className)) {
+          score += 30;
+        } else if (el.tagName === 'TIME') {
+          score += 25;
+        }
+
+        if (text.length < 60) {
+          score += 15;
+        } else if (text.length < 150) {
+          score += 5;
+        }
+
+        if (hasBoth) {
+          if (score > bestCompleteScore) {
+            bestCompleteScore = score;
+            bestComplete = range;
           }
+        }
+        if (range.startDate && score > bestStartScore) {
+          bestStartScore = score;
+          bestStart = range.startDate;
+        }
+        if (range.endDate && score > bestEndScore) {
+          bestEndScore = score;
+          bestEnd = range.endDate;
         }
       }
     } catch (e) {
@@ -425,9 +509,37 @@ function extractDatesFromDomText(doc, selectionText) {
     if (content) {
       const range = parseDateRangeFromText(content);
       if (range && (range.startDate || range.endDate)) {
-        return range;
+        const hasBoth = !!(range.startDate && range.endDate);
+        const score = hasBoth ? 70 : 10;
+        if (hasBoth && score > bestCompleteScore) {
+          bestCompleteScore = score;
+          bestComplete = range;
+        }
+        if (range.startDate && score > bestStartScore) {
+          bestStartScore = score;
+          bestStart = range.startDate;
+        }
+        if (range.endDate && score > bestEndScore) {
+          bestEndScore = score;
+          bestEnd = range.endDate;
+        }
       }
     }
+  }
+
+  if (bestComplete && bestCompleteScore >= Math.max(bestStartScore, bestEndScore)) {
+    return bestComplete;
+  }
+
+  if (bestStart || bestEnd) {
+    return {
+      startDate: bestStart || (bestComplete ? bestComplete.startDate : ''),
+      endDate: bestEnd || (bestComplete ? bestComplete.endDate : '')
+    };
+  }
+
+  if (bestComplete) {
+    return bestComplete;
   }
 
   return { startDate: '', endDate: '' };

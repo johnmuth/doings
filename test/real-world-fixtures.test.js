@@ -153,4 +153,54 @@ describe('Real-World Exhibition Fixtures', () => {
     assert.strictEqual(data.startDate, '2026-10-15');
     assert.strictEqual(data.endDate, '2027-01-05');
   });
+
+  it('should extract start and end dates from Tate Modern live layout despite header search promo', () => {
+    const html = `
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+        <title>Ana Mendieta | Tate Modern</title>
+        <meta property="og:title" content="Ana Mendieta">
+        <meta property="og:site_name" content="Tate">
+        <meta property="og:description" content="Discover the groundbreaking work of Cuban-American artist Ana Mendieta.">
+        <meta property="og:image" content="https://www.tate.org.uk/media/ana-mendieta.jpg">
+      </head>
+      <body>
+        <div id="page">
+          <header id="header">
+            <div class="site-search">
+              <div class="search-bar-promo">
+                <div class="card card--search-promo">
+                  <div class="card-content">
+                    <div class="event-info event-info__date">
+                      <span>Until 3 Jan 2027</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </header>
+          <main class="content container-16">
+            <div class="splash-header">
+              <h1 class="splash-header__title">Ana Mendieta</h1>
+              <span class="splash-header__dates">Until 17 January 2027</span>
+            </div>
+            <div class="content-block content-block--dates">
+              <h2 class="content-block__title">Dates</h2>
+              <p class="content-block--dates__item">14 July 2026 – 17 January 2027</p>
+            </div>
+          </main>
+        </div>
+      </body>
+      </html>
+    `;
+    const { document, window } = createDoc(html, 'https://www.tate.org.uk/whats-on/tate-modern/ana-mendieta');
+    const data = extractExhibitionMetadata(document, window);
+
+    assert.strictEqual(data.title, 'Ana Mendieta');
+    assert.strictEqual(data.venue, 'Tate');
+    assert.strictEqual(data.startDate, '2026-07-14');
+    assert.strictEqual(data.endDate, '2027-01-17');
+    assert.strictEqual(data.image, 'https://www.tate.org.uk/media/ana-mendieta.jpg');
+  });
 });
