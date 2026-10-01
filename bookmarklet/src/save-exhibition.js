@@ -4,6 +4,8 @@
  * and dispatches to Google Apps Script.
  */
 (function() {
+const WEBHOOK_URL = 'YOUR_GOOGLE_APPS_SCRIPT_URL_HERE';
+
 const MONTH_MAP = {
   january: 1, jan: 1,
   february: 2, feb: 2,
@@ -655,8 +657,6 @@ function extractExhibitionMetadata(doc, win) {
  * Bookmarklet entry point.
  */
 async function saveExhibition() {
-  const WEBHOOK_URL = 'YOUR_GOOGLE_APPS_SCRIPT_URL_HERE';
-
   function showToast(message, isError = false) {
     if (typeof document === 'undefined') return;
     const toast = document.createElement('div');
